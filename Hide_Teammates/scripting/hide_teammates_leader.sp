@@ -2,6 +2,7 @@
 #include <sdkhooks> 
 #include <csgocolors_fix>
 #include <clientprefs>
+#include <leader>
 #pragma semicolon 1
 
 ConVar sm_hide_enabled, sm_hide_maximum;
@@ -24,8 +25,8 @@ public Plugin myinfo =
 { 
 	name = "Hide Teammates", 
 	author = "DarkerZ [RUS]", 
-	description = "A plugin that can !hide with individual distances", 
-	version = "1.6", 
+	description = "A plugin that can !hide with individual distances and ignore leader", 
+	version = "1.6L", 
 	url = "dark-skill.ru" 
 } 
 
@@ -268,7 +269,7 @@ public Action HideTimer(Handle timer)
 			g_HidePlayers[client][target] = false;
 			if(IsClientInGame(client) && IsPlayerAlive(client)) 
 			{
-				if(target != client && g_bHide[client] && IsClientInGame(target) && IsPlayerAlive(target))
+				if(target != client && g_bHide[client] && IsClientInGame(target) && IsPlayerAlive(target) && target != Leader_CurrentLeader())
 				{
 					if((GetClientTeam(client)==GetClientTeam(target)))
 					{

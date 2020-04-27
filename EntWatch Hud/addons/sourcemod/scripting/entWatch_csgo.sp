@@ -15,13 +15,18 @@
 #tryinclude <csgocolors_fix>
 #pragma newdecls required
 
-#define PLUGIN_VERSION "3.8.146"
+#define PLUGIN_VERSION "3.8.149"
 
 //uncomment the next line if you using DynamicChannels: https://github.com/Vauff/DynamicChannels
 //#define DYNAMIC_CHANNELS
 #if defined DYNAMIC_CHANNELS
 #include <DynamicChannels>
 #endif
+
+//uncomment the next line if you want to use the item regardless of the position of the camera or in the crowd. Double triggering possible
+//#define ENTWATCH_USE_PRIORITY
+
+#define MAXSHOWHUDITEMS 10
 
 //----------------------------------------------------------------------------------------------------
 // Purpose: Entity data
@@ -52,6 +57,7 @@ enum entities
 	ent_glow_r,
 	ent_glow_g,
 	ent_glow_b,
+	ent_delay,
 };
 
 int entArray[512][entities],
@@ -101,7 +107,9 @@ ConVar g_hCvar_DisplayEnabled,
 	g_hCvar_Glow_Spawn_Type,
 	g_hCvar_Glow_Drop_Type,
 	g_hCvar_Default_BanTime,
-	g_hCvar_HUD_Channel;
+	g_hCvar_HUD_Channel,
+	g_hCvar_Delay_Use,
+	g_hCvar_Admins_See;
 
 Handle g_hAdminMenu,
 	g_hOnBanForward,
@@ -121,14 +129,16 @@ int g_iGlow_Drop_Type = 0;
 int g_iHUDChannel = 5;
 
 bool g_bDisplay[MAXPLAYERS + 1]     = false;
-bool g_bDisplay2[MAXPLAYERS + 1]     = false;
 float g_DefaultHudPos[2];
 int g_DefaultHudColor[3];
-int ItemIdx=1;
-char ShowCools[64][512];
-char ShowCoolsPlayerName[64][512];
 float HudPosition[MAXPLAYERS+1][2];
 int HudColor[MAXPLAYERS+1][3];
+
+int g_iDelayUse = 3;
+bool g_bAdminsSee = true;
+bool g_bTeamOnly = true;
+bool g_bDispEnabled = true;
+bool g_bDispCooldowns = true;
 //----------------------------------------------------------------------------------------------------
 // Purpose: Plugin information
 //----------------------------------------------------------------------------------------------------
@@ -173,6 +183,8 @@ public void OnPluginStart()
 	g_hCvar_Glow_Drop_Type    = CreateConVar("entwatch_glow_drop_type", "0", "Glow Type after Drop Items.", _, true, 0.0, true, 3.0);
 	g_hCvar_Default_BanTime   = CreateConVar("entwatch_bantime", "0", "Default ban time (0-43200)", _, true, 0.0, true, 43200.0);
 	g_hCvar_HUD_Channel       = CreateConVar("entwatch_hud_channel", "5", "Change HUD Channel/Group Dynamic channel.", _, true, 0.0, true, 5.0);
+	g_hCvar_Delay_Use         = CreateConVar("entwatch_delay_use", "3", "Change delay before use", _, true, 0.0, true, 60.0);
+	g_hCvar_Admins_See        = CreateConVar("entwatch_admins_see", "1", "Enable/Disable admins see everything Items", _, true, 0.0, true, 1.0);
 
 	g_hCookie_Display     = RegClientCookie("entwatch_display", "", CookieAccess_Private);
 	g_hCookie_Restricted  = RegClientCookie("entwatch_restricted", "", CookieAccess_Private);
@@ -209,6 +221,11 @@ public void OnPluginStart()
 	HookConVarChange(g_hCvar_Glow_Spawn_Type, Cvar_Glow_Changed);
 	HookConVarChange(g_hCvar_Glow_Drop_Type, Cvar_Glow_Changed);
 	HookConVarChange(g_hCvar_HUD_Channel, Cvar_HUD_Channel_Changed);
+	HookConVarChange(g_hCvar_Delay_Use, Cvar_Delay_Use_Changed);
+	HookConVarChange(g_hCvar_Admins_See, Cvar_Admins_See_Changed);
+	HookConVarChange(g_hCvar_ModeTeamOnly, Cvar_TeamOnly_Changed);
+	HookConVarChange(g_hCvar_DisplayEnabled, Cvar_DisplayEnabled_Changed);
+	HookConVarChange(g_hCvar_DisplayCooldowns, Cvar_DisplayCooldowns_Changed);
 
 	CreateTimer(1.0, Timer_DisplayHUD, _, TIMER_REPEAT);
 	CreateTimer(1.0, Timer_Cooldowns, _, TIMER_REPEAT);
@@ -253,6 +270,31 @@ public void Cvar_Glow_Changed(ConVar convar, const char[] oldValue, const char[]
 public void Cvar_HUD_Channel_Changed(ConVar convar, const char[] oldValue, const char[] newValue)
 {
 	g_iHUDChannel = GetConVarInt(convar);
+}
+
+public void Cvar_Delay_Use_Changed(ConVar convar, const char[] oldValue, const char[] newValue)
+{
+	g_iDelayUse = GetConVarInt(convar);
+}
+
+public void Cvar_Admins_See_Changed(ConVar convar, const char[] oldValue, const char[] newValue)
+{
+	g_bAdminsSee = GetConVarBool(convar);
+}
+
+public void Cvar_TeamOnly_Changed(ConVar convar, const char[] oldValue, const char[] newValue)
+{
+	g_bTeamOnly = GetConVarBool(convar);
+}
+
+public void Cvar_DisplayEnabled_Changed(ConVar convar, const char[] oldValue, const char[] newValue)
+{
+	g_bDispEnabled = GetConVarBool(convar);
+}
+
+public void Cvar_DisplayCooldowns_Changed(ConVar convar, const char[] oldValue, const char[] newValue)
+{
+	g_bDispCooldowns = GetConVarBool(convar);
 }
 
 //----------------------------------------------------------------------------------------------------
@@ -1010,6 +1052,7 @@ public Action Event_RoundStart(Event hEvent, const char[] sName, bool bDontBroad
 			entArray[index][ent_buttonid]       = -1;
 			entArray[index][ent_ownerid]        = -1;
 			entArray[index][ent_cooldowntime]   = -1;
+			entArray[index][ent_delay]          = 0;
 			entArray[index][ent_uses]           = 0;
 			if (IsValidEdict(entArray[index][ent_glowent])) AcceptEntityInput(entArray[index][ent_glowent], "Kill");
 			entArray[index][ent_glowent]		= -1;
@@ -1036,6 +1079,7 @@ public Action Event_RoundEnd(Event hEvent, const char[] sName, bool bDontBroadca
 			entArray[index][ent_buttonid]       = -1;
 			entArray[index][ent_ownerid]        = -1;
 			entArray[index][ent_cooldowntime]   = -1;
+			entArray[index][ent_delay]          = 0;
 			entArray[index][ent_uses]           = 0;
 			if (IsValidEdict(entArray[index][ent_glowent])) AcceptEntityInput(entArray[index][ent_glowent], "Kill");
 			entArray[index][ent_glowent]		= -1;
@@ -1053,6 +1097,10 @@ public void OnClientCookiesCached(int iClient)
 	char sBuffer_cookie[32];
 	
 	GetClientCookie(iClient, g_hCookie_Display, sBuffer_cookie, sizeof(sBuffer_cookie));
+	if (StrEqual(sBuffer_cookie,"")) {
+		SetClientCookie(iClient, g_hCookie_Display, "1");
+		strcopy(sBuffer_cookie, sizeof(sBuffer_cookie), "1");
+	}
 	g_bDisplay[iClient] = view_as<bool>(StringToInt(sBuffer_cookie));
 
 	GetClientCookie(iClient, g_hCookie_RestrictedLength, sBuffer_cookie, sizeof(sBuffer_cookie));
@@ -1109,7 +1157,7 @@ public void OnClientPutInServer(int iClient)
 	SDKHookEx(iClient, SDKHook_WeaponEquipPost, OnWeaponEquip);
 	SDKHookEx(iClient, SDKHook_WeaponCanUse, OnWeaponCanUse);
 	
-	g_bDisplay2[iClient] = true;
+	g_bDisplay[iClient] = true;
 	if (!AreClientCookiesCached(iClient))
 	{
 		HudPosition[iClient][0] = g_DefaultHudPos[0];
@@ -1117,8 +1165,7 @@ public void OnClientPutInServer(int iClient)
 		HudColor[iClient][0] = g_DefaultHudColor[0];
 		HudColor[iClient][1] = g_DefaultHudColor[1];
 		HudColor[iClient][2] = g_DefaultHudColor[2];
-		g_bDisplay2[iClient] = true;
-		g_bDisplay[iClient] = false;
+		g_bDisplay[iClient] = true;
 	}
 
 	g_bRestricted[iClient] = false;
@@ -1163,7 +1210,7 @@ public void OnClientDisconnect(int iClient)
 					for (int iPly = 1; iPly <= MaxClients; iPly++)
 					{
 						if (IsClientConnected(iPly) && IsClientInGame(iPly)) {
-							if (!GetConVarBool(g_hCvar_ModeTeamOnly) || (GetConVarBool(g_hCvar_ModeTeamOnly) && GetClientTeam(iPly) == GetClientTeam(iClient) || !IsPlayerAlive(iPly) || CheckCommandAccess(iPly, "entWatch_chat", ADMFLAG_CHAT))) {
+							if (!g_bTeamOnly || (g_bTeamOnly && GetClientTeam(iPly) == GetClientTeam(iClient) || !IsPlayerAlive(iPly) || CheckCommandAccess(iPly, "entWatch_chat", ADMFLAG_CHAT))) {
 								CPrintToChat(iPly, "\x07%s[entWatch] \x07%s%N \x07%s(\x07%s%s\x07%s) \x07%s%t \x07%s%s", color_tag, color_name, iClient, color_disconnect, color_steamid, sBuffer_steamid, color_disconnect, color_disconnect, "disconnect", entArray[index][ent_color], entArray[index][ent_name]);
 							}
 						}
@@ -1177,9 +1224,7 @@ public void OnClientDisconnect(int iClient)
 	SDKUnhook(iClient, SDKHook_WeaponEquipPost, OnWeaponEquip);
 	SDKUnhook(iClient, SDKHook_WeaponCanUse, OnWeaponCanUse);
 
-	//g_bDisplay[iClient] = false;
-	g_bDisplay[iClient] = false;
-	g_bDisplay2[iClient] = true;
+	g_bDisplay[iClient] = true;
 	g_bRestricted[iClient] = false;
 	g_iRestrictedLength[iClient] = 0;
 }
@@ -1199,7 +1244,7 @@ public Action Event_PlayerDeath(Event hEvent, const char[] sName, bool bDontBroa
 			{
 				entArray[index][ent_ownerid] = -1;
 
-				if (entArray[index][ent_forcedrop] && IsValidEdict(entArray[index][ent_weaponid])) CS_DropWeapon(iClient, entArray[index][ent_weaponid], false);
+				if (entArray[index][ent_forcedrop] && IsValidEdict(entArray[index][ent_weaponid]) && GetSlotCSGO(entArray[index][ent_weaponid]) != -1) CS_DropWeapon(iClient, entArray[index][ent_weaponid], false);
 
 				else if (entArray[index][ent_chat])
 				{
@@ -1211,7 +1256,7 @@ public Action Event_PlayerDeath(Event hEvent, const char[] sName, bool bDontBroa
 					{
 						if (IsClientConnected(iPly) && IsClientInGame(iPly))
 						{
-							if (!GetConVarBool(g_hCvar_ModeTeamOnly) || (GetConVarBool(g_hCvar_ModeTeamOnly) && GetClientTeam(iPly) == GetClientTeam(iClient) || !IsPlayerAlive(iPly) || CheckCommandAccess(iPly, "entWatch_chat", ADMFLAG_CHAT))) {
+							if (!g_bTeamOnly || (g_bTeamOnly && GetClientTeam(iPly) == GetClientTeam(iClient) || !IsPlayerAlive(iPly) || CheckCommandAccess(iPly, "entWatch_chat", ADMFLAG_CHAT))) {
 								CPrintToChat(iPly, "\x07%s[entWatch] \x07%s%N \x07%s(\x07%s%s\x07%s) \x07%s%t \x07%s%s", color_tag, color_name, iClient, color_death, color_steamid, sBuffer_steamid, color_death, color_death, "death", entArray[index][ent_color], entArray[index][ent_name]);
 							}
 						}
@@ -1236,6 +1281,7 @@ public Action OnWeaponEquip(int iClient, int iWeapon)
 				if (entArray[index][ent_weaponid] != -1 && entArray[index][ent_weaponid] == iWeapon)
 				{
 					entArray[index][ent_ownerid] = iClient;
+					entArray[index][ent_delay] = g_iDelayUse;
 					DisableGlow(index);
 
 					if (entArray[index][ent_chat])
@@ -1248,7 +1294,7 @@ public Action OnWeaponEquip(int iClient, int iWeapon)
 						{
 							if (IsClientConnected(iPly) && IsClientInGame(iPly))
 							{
-								if (!GetConVarBool(g_hCvar_ModeTeamOnly) || (GetConVarBool(g_hCvar_ModeTeamOnly) && GetClientTeam(iPly) == GetClientTeam(iClient) || !IsPlayerAlive(iPly) || CheckCommandAccess(iPly, "entWatch_chat", ADMFLAG_CHAT)))
+								if (!g_bTeamOnly || (g_bTeamOnly && GetClientTeam(iPly) == GetClientTeam(iClient) || !IsPlayerAlive(iPly) || CheckCommandAccess(iPly, "entWatch_chat", ADMFLAG_CHAT)))
 								{
 									CPrintToChat(iPly, "\x07%s[entWatch] \x07%s%N \x07%s(\x07%s%s\x07%s) \x07%s%t \x07%s%s", color_tag, color_name, iClient, color_pickup, color_steamid, sBuffer_steamid, color_pickup, color_pickup, "pickup", entArray[index][ent_color], entArray[index][ent_name]);
 								}
@@ -1289,7 +1335,7 @@ public Action OnWeaponDrop(int iClient, int iWeapon)
 						{
 							if (IsClientConnected(iPly) && IsClientInGame(iPly))
 							{
-								if (!GetConVarBool(g_hCvar_ModeTeamOnly) || (GetConVarBool(g_hCvar_ModeTeamOnly) && GetClientTeam(iPly) == GetClientTeam(iClient) || !IsPlayerAlive(iPly) || CheckCommandAccess(iPly, "entWatch_chat", ADMFLAG_CHAT)))
+								if (!g_bTeamOnly || (g_bTeamOnly && GetClientTeam(iPly) == GetClientTeam(iClient) || !IsPlayerAlive(iPly) || CheckCommandAccess(iPly, "entWatch_chat", ADMFLAG_CHAT)))
 								{
 									CPrintToChat(iPly, "\x07%s[entWatch] \x07%s%N \x07%s(\x07%s%s\x07%s) \x07%s%t \x07%s%s", color_tag, color_name, iClient, color_drop, color_steamid, sBuffer_steamid, color_drop, color_drop, "drop", entArray[index][ent_color], entArray[index][ent_name]);
 								}
@@ -1382,6 +1428,8 @@ public Action OnButtonUse(int iButton, int iActivator, int iCaller, UseType uTyp
 				if (entArray[index][ent_ownerid] != iActivator && entArray[index][ent_ownerid] != iCaller) return Plugin_Handled;
 				else if (entArray[index][ent_hasfiltername]) DispatchKeyValue(iActivator, "targetname", entArray[index][ent_filtername]);
 
+				if(entArray[index][ent_delay]>0) return Plugin_Handled;
+					
 				char sBuffer_steamid[32];
 				GetClientAuthId(iActivator, AuthId_Steam2, sBuffer_steamid, sizeof(sBuffer_steamid));
 				ReplaceString(sBuffer_steamid, sizeof(sBuffer_steamid), "STEAM_", "", true);
@@ -1395,7 +1443,7 @@ public Action OnButtonUse(int iButton, int iActivator, int iCaller, UseType uTyp
 							{
 								if (IsClientConnected(iPly) && IsClientInGame(iPly))
 								{
-									if (!GetConVarBool(g_hCvar_ModeTeamOnly) || (GetConVarBool(g_hCvar_ModeTeamOnly) && GetClientTeam(iPly) == GetClientTeam(iActivator) || !IsPlayerAlive(iPly) || CheckCommandAccess(iPly, "entWatch_chat", ADMFLAG_CHAT)))
+									if (!g_bTeamOnly || (g_bTeamOnly && GetClientTeam(iPly) == GetClientTeam(iActivator) || !IsPlayerAlive(iPly) || CheckCommandAccess(iPly, "entWatch_chat", ADMFLAG_CHAT)))
 									{
 										CPrintToChat(iPly, "\x07%s[entWatch] \x07%s%N \x07%s(\x07%s%s\x07%s) \x07%s%t \x07%s%s", color_tag, color_name, iActivator, color_use, color_steamid, sBuffer_steamid, color_use, color_use, "use", entArray[index][ent_color], entArray[index][ent_name]);
 									}
@@ -1413,7 +1461,7 @@ public Action OnButtonUse(int iButton, int iActivator, int iCaller, UseType uTyp
 							{
 								if (IsClientConnected(iPly) && IsClientInGame(iPly))
 								{
-									if (!GetConVarBool(g_hCvar_ModeTeamOnly) || (GetConVarBool(g_hCvar_ModeTeamOnly) && GetClientTeam(iPly) == GetClientTeam(iActivator) || !IsPlayerAlive(iPly) || CheckCommandAccess(iPly, "entWatch_chat", ADMFLAG_CHAT)))
+									if (!g_bTeamOnly || (g_bTeamOnly && GetClientTeam(iPly) == GetClientTeam(iActivator) || !IsPlayerAlive(iPly) || CheckCommandAccess(iPly, "entWatch_chat", ADMFLAG_CHAT)))
 									{
 										CPrintToChat(iPly, "\x07%s[entWatch] \x07%s%N \x07%s(\x07%s%s\x07%s) \x07%s%t \x07%s%s", color_tag, color_name, iActivator, color_use, color_steamid, sBuffer_steamid, color_use, color_use, "use", entArray[index][ent_color], entArray[index][ent_name]);
 									}
@@ -1432,7 +1480,7 @@ public Action OnButtonUse(int iButton, int iActivator, int iCaller, UseType uTyp
 							{
 								if (IsClientConnected(iPly) && IsClientInGame(iPly))
 								{
-									if (!GetConVarBool(g_hCvar_ModeTeamOnly) || (GetConVarBool(g_hCvar_ModeTeamOnly) && GetClientTeam(iPly) == GetClientTeam(iActivator) || !IsPlayerAlive(iPly) || CheckCommandAccess(iPly, "entWatch_chat", ADMFLAG_CHAT)))
+									if (!g_bTeamOnly || (g_bTeamOnly && GetClientTeam(iPly) == GetClientTeam(iActivator) || !IsPlayerAlive(iPly) || CheckCommandAccess(iPly, "entWatch_chat", ADMFLAG_CHAT)))
 									{
 										CPrintToChat(iPly, "\x07%s[entWatch] \x07%s%N \x07%s(\x07%s%s\x07%s) \x07%s%t \x07%s%s", color_tag, color_name, iActivator, color_use, color_steamid, sBuffer_steamid, color_use, color_use, "use", entArray[index][ent_color], entArray[index][ent_name]);
 									}
@@ -1451,7 +1499,7 @@ public Action OnButtonUse(int iButton, int iActivator, int iCaller, UseType uTyp
 							{
 								if (IsClientConnected(iPly) && IsClientInGame(iPly))
 								{
-									if (!GetConVarBool(g_hCvar_ModeTeamOnly) || (GetConVarBool(g_hCvar_ModeTeamOnly) && GetClientTeam(iPly) == GetClientTeam(iActivator) || !IsPlayerAlive(iPly) || CheckCommandAccess(iPly, "entWatch_chat", ADMFLAG_CHAT)))
+									if (!g_bTeamOnly || (g_bTeamOnly && GetClientTeam(iPly) == GetClientTeam(iActivator) || !IsPlayerAlive(iPly) || CheckCommandAccess(iPly, "entWatch_chat", ADMFLAG_CHAT)))
 									{
 										CPrintToChat(iPly, "\x07%s[entWatch] \x07%s%N \x07%s(\x07%s%s\x07%s) \x07%s%t \x07%s%s", color_tag, color_name, iActivator, color_use, color_steamid, sBuffer_steamid, color_use, color_use, "use", entArray[index][ent_color], entArray[index][ent_name]);
 									}
@@ -1492,6 +1540,10 @@ public Action Timer_Cooldowns(Handle timer)
 			if (entArray[index][ent_cooldowntime] >= 0)
 			{
 				entArray[index][ent_cooldowntime]--;
+			}
+			if (entArray[index][ent_delay] > 0)
+			{
+				entArray[index][ent_delay]--;
 			}
 		}
 	}
@@ -2578,236 +2630,216 @@ public Action Timer_DisplayHUD(Handle timer, int client)
 	//if (GameRules_GetProp("m_bWarmupPeriod") == 1)
 	//	return Plugin_Continue;
 	
-	if (GetConVarBool(g_hCvar_DisplayEnabled))
+	if (g_bDispEnabled)
 	{
 		if (g_bConfigLoaded && !g_bRoundTransition)
 		{
-			char buffer_teamtext[10][512];
-			ItemIdx = 1 ;
-			char buffer_hud[512];
+			char buffer_teamtext_humans[MAXSHOWHUDITEMS][64];
+			char buffer_teamtext_zombies[MAXSHOWHUDITEMS][64];
+			int iIndexHumans = -1;
+			int iIndexZombies = -1;
+			char sMessageHumans[1024];
+			char sMessageZombies[1024];
+			char sMessageAdmins[1024];
 			for (int index = 0; index < entArraySize; index++)
 			{
 				if (entArray[index][ent_hud] && entArray[index][ent_ownerid] != -1)
 				{
-					//128
-					char buffer_temp[512];
-					//13
-					char buffer_name[64];
-					if (GetConVarBool(g_hCvar_DisplayCooldowns))
+					if (g_bDispCooldowns)
 					{
-						if (entArray[index][ent_mode] == 2)
+						if(GetClientTeam(entArray[index][ent_ownerid])==2 && iIndexZombies < MAXSHOWHUDITEMS-1)//ZM
 						{
-							if (entArray[index][ent_cooldowntime] > 0)
-							{
-								Format(buffer_temp, sizeof(buffer_temp), "%s[%d]: ",entArray[index][ent_shortname], entArray[index][ent_cooldowntime]);
-								Format(buffer_name, sizeof(buffer_name), "%N",entArray[index][ent_ownerid]);
-								if(GetClientTeam(entArray[index][ent_ownerid])==3)
-								{
-									ShowCools[ItemIdx] = buffer_temp;
-									ShowCoolsPlayerName[ItemIdx] = buffer_name;
-									ItemIdx++;
-								}
-							
-							}
+							iIndexZombies++;
+							if(entArray[index][ent_delay] > 0)
+								FormatEx(buffer_teamtext_zombies[iIndexZombies], sizeof(buffer_teamtext_zombies[]), "%s[%d]: %N", entArray[index][ent_shortname], entArray[index][ent_delay], entArray[index][ent_ownerid]);
 							else
 							{
-								Format(buffer_temp, sizeof(buffer_temp), "%s[%s]: ", entArray[index][ent_shortname],"R");
-								Format(buffer_name, sizeof(buffer_name), "%N",entArray[index][ent_ownerid]);
-								if(GetClientTeam(entArray[index][ent_ownerid])==3)
+								switch(entArray[index][ent_mode])
 								{
-									ShowCools[ItemIdx] = buffer_temp;
-									ShowCoolsPlayerName[ItemIdx] = buffer_name;
-									ItemIdx++;
-								}
-							}
-						}
-						else if (entArray[index][ent_mode] == 3)
-						{
-							if (entArray[index][ent_uses] < entArray[index][ent_maxuses])
-							{
-								Format(buffer_temp, sizeof(buffer_temp), "%s[%d/%d]: ", entArray[index][ent_shortname], entArray[index][ent_uses], entArray[index][ent_maxuses]);
-								Format(buffer_name, sizeof(buffer_name), "%N",entArray[index][ent_ownerid]);
-								if(GetClientTeam(entArray[index][ent_ownerid])==3)
-								{
-									ShowCools[ItemIdx] = buffer_temp;
-									ShowCoolsPlayerName[ItemIdx] = buffer_name;
-									ItemIdx++;
-								}
-							}
-							else
-							{
-								Format(buffer_temp, sizeof(buffer_temp), "%s[%d/%d]: ", entArray[index][ent_shortname], entArray[index][ent_uses], entArray[index][ent_maxuses]);
-								Format(buffer_name, sizeof(buffer_name), "%N",entArray[index][ent_ownerid]);
-								if(GetClientTeam(entArray[index][ent_ownerid])==3)
-								{
-									ShowCools[ItemIdx] = buffer_temp;
-									ShowCoolsPlayerName[ItemIdx] = buffer_name;
-									ItemIdx++;
-								}
-							}
-						}
-						else if (entArray[index][ent_mode] == 4)
-						{
-							if (entArray[index][ent_cooldowntime] > 0)
-							{
-								Format(buffer_temp, sizeof(buffer_temp), "%s[%d]: ", entArray[index][ent_shortname], entArray[index][ent_cooldowntime]);
-								Format(buffer_name, sizeof(buffer_name), "%N",entArray[index][ent_ownerid]);
-								if(GetClientTeam(entArray[index][ent_ownerid])==3)
-								{
-									ShowCools[ItemIdx] = buffer_temp;
-									ShowCoolsPlayerName[ItemIdx] = buffer_name;
-									ItemIdx++;
-								}
-							}
-							else
-							{
-								if (entArray[index][ent_uses] < entArray[index][ent_maxuses])
-								{
-									Format(buffer_temp, sizeof(buffer_temp), "%s[%d/%d]: ", entArray[index][ent_shortname], entArray[index][ent_uses], entArray[index][ent_maxuses]);
-									Format(buffer_name, sizeof(buffer_name), "%N",entArray[index][ent_ownerid]);
-									if(GetClientTeam(entArray[index][ent_ownerid])==3)
+									case 2:
 									{
-										ShowCools[ItemIdx] = buffer_temp;
-										ShowCoolsPlayerName[ItemIdx] = buffer_name;
-										ItemIdx++;
+										if (entArray[index][ent_cooldowntime] > 0)
+											FormatEx(buffer_teamtext_zombies[iIndexZombies], sizeof(buffer_teamtext_zombies[]), "%s[%d]: %N", entArray[index][ent_shortname], entArray[index][ent_cooldowntime], entArray[index][ent_ownerid]);
+										else
+											FormatEx(buffer_teamtext_zombies[iIndexZombies], sizeof(buffer_teamtext_zombies[]), "%s[R]: %N", entArray[index][ent_shortname], entArray[index][ent_ownerid]);
 									}
-								}
-								else
-								{
-									Format(buffer_temp, sizeof(buffer_temp), "%s[%s]: ", entArray[index][ent_shortname], "D");
-									Format(buffer_name, sizeof(buffer_name), "%N",entArray[index][ent_ownerid]);
-									if(GetClientTeam(entArray[index][ent_ownerid])==3)
+									case 3:
 									{
-										ShowCools[ItemIdx] = buffer_temp;
-										ShowCoolsPlayerName[ItemIdx] = buffer_name;
-										ItemIdx++;
+										if (entArray[index][ent_uses] < entArray[index][ent_maxuses])
+											FormatEx(buffer_teamtext_zombies[iIndexZombies], sizeof(buffer_teamtext_zombies[]), "%s[%d/%d]: %N", entArray[index][ent_shortname], entArray[index][ent_uses], entArray[index][ent_maxuses], entArray[index][ent_ownerid]);
+										else
+											FormatEx(buffer_teamtext_zombies[iIndexZombies], sizeof(buffer_teamtext_zombies[]), "%s[D]: %N", entArray[index][ent_shortname], entArray[index][ent_ownerid]);
+									}
+									case 4:
+									{
+										if (entArray[index][ent_cooldowntime] > 0)
+											FormatEx(buffer_teamtext_zombies[iIndexZombies], sizeof(buffer_teamtext_zombies[]), "%s[%d]: %N", entArray[index][ent_shortname], entArray[index][ent_cooldowntime], entArray[index][ent_ownerid]);
+										else
+											if (entArray[index][ent_uses] < entArray[index][ent_maxuses])
+												FormatEx(buffer_teamtext_zombies[iIndexZombies], sizeof(buffer_teamtext_zombies[]), "%s[%d/%d]: %N", entArray[index][ent_shortname], entArray[index][ent_uses], entArray[index][ent_maxuses], entArray[index][ent_ownerid]);
+											else
+												FormatEx(buffer_teamtext_zombies[iIndexZombies], sizeof(buffer_teamtext_zombies[]), "%s[D]: %N", entArray[index][ent_shortname], entArray[index][ent_ownerid]);
+									}
+									case 5:
+									{
+										if (entArray[index][ent_cooldowntime] > 0)
+											FormatEx(buffer_teamtext_zombies[iIndexZombies], sizeof(buffer_teamtext_zombies[]), "%s[%d]: %N", entArray[index][ent_shortname], entArray[index][ent_cooldowntime], entArray[index][ent_ownerid]);
+										else
+											FormatEx(buffer_teamtext_zombies[iIndexZombies], sizeof(buffer_teamtext_zombies[]), "%s[%d/%d]: %N", entArray[index][ent_shortname], entArray[index][ent_uses], entArray[index][ent_maxuses], entArray[index][ent_ownerid]);
+									}
+									default:
+									{
+										FormatEx(buffer_teamtext_zombies[iIndexZombies], sizeof(buffer_teamtext_zombies[]), "%s[N/A]: %N", entArray[index][ent_shortname], entArray[index][ent_ownerid]);
 									}
 								}
 							}
 						}
-						else if (entArray[index][ent_mode] == 5)
+						else if(GetClientTeam(entArray[index][ent_ownerid])==3 && iIndexHumans < MAXSHOWHUDITEMS-1)//Humans
 						{
-							if (entArray[index][ent_cooldowntime] > 0)
-							{
-								Format(buffer_temp, sizeof(buffer_temp), "%s[%d]: ", entArray[index][ent_shortname], entArray[index][ent_cooldowntime]);
-								Format(buffer_name, sizeof(buffer_name), "%N",entArray[index][ent_ownerid]);
-								if(GetClientTeam(entArray[index][ent_ownerid])==3)
-								{
-									ShowCools[ItemIdx] = buffer_temp;
-									ShowCoolsPlayerName[ItemIdx] = buffer_name;
-									ItemIdx++;
-								}
-							}
+							iIndexHumans++;
+							if(entArray[index][ent_delay] > 0)
+								FormatEx(buffer_teamtext_humans[iIndexHumans], sizeof(buffer_teamtext_humans[]), "%s[%d]: %N", entArray[index][ent_shortname], entArray[index][ent_delay], entArray[index][ent_ownerid]);
 							else
 							{
-								Format(buffer_temp, sizeof(buffer_temp), "%s[%d/%d]: ", entArray[index][ent_shortname], entArray[index][ent_uses], entArray[index][ent_maxuses]);
-								Format(buffer_name, sizeof(buffer_name), "%N",entArray[index][ent_ownerid]);
-								if(GetClientTeam(entArray[index][ent_ownerid])==3)
+								switch(entArray[index][ent_mode])
 								{
-									ShowCools[ItemIdx] = buffer_temp;
-									ShowCoolsPlayerName[ItemIdx] = buffer_name;
-									ItemIdx++;
+									case 2:
+									{
+										if (entArray[index][ent_cooldowntime] > 0)
+											FormatEx(buffer_teamtext_humans[iIndexHumans], sizeof(buffer_teamtext_humans[]), "%s[%d]: %N", entArray[index][ent_shortname], entArray[index][ent_cooldowntime], entArray[index][ent_ownerid]);
+										else
+											FormatEx(buffer_teamtext_humans[iIndexHumans], sizeof(buffer_teamtext_humans[]), "%s[R]: %N", entArray[index][ent_shortname], entArray[index][ent_ownerid]);
+									}
+									case 3:
+									{
+										if (entArray[index][ent_uses] < entArray[index][ent_maxuses])
+											FormatEx(buffer_teamtext_humans[iIndexHumans], sizeof(buffer_teamtext_humans[]), "%s[%d/%d]: %N", entArray[index][ent_shortname], entArray[index][ent_uses], entArray[index][ent_maxuses], entArray[index][ent_ownerid]);
+										else
+											FormatEx(buffer_teamtext_humans[iIndexHumans], sizeof(buffer_teamtext_humans[]), "%s[D]: %N", entArray[index][ent_shortname], entArray[index][ent_ownerid]);
+									}
+									case 4:
+									{
+										if (entArray[index][ent_cooldowntime] > 0)
+											FormatEx(buffer_teamtext_humans[iIndexHumans], sizeof(buffer_teamtext_humans[]), "%s[%d]: %N", entArray[index][ent_shortname], entArray[index][ent_cooldowntime], entArray[index][ent_ownerid]);
+										else
+											if (entArray[index][ent_uses] < entArray[index][ent_maxuses])
+												FormatEx(buffer_teamtext_humans[iIndexHumans], sizeof(buffer_teamtext_humans[]), "%s[%d/%d]: %N", entArray[index][ent_shortname], entArray[index][ent_uses], entArray[index][ent_maxuses], entArray[index][ent_ownerid]);
+											else
+												FormatEx(buffer_teamtext_humans[iIndexHumans], sizeof(buffer_teamtext_humans[]), "%s[D]: %N", entArray[index][ent_shortname], entArray[index][ent_ownerid]);
+									}
+									case 5:
+									{
+										if (entArray[index][ent_cooldowntime] > 0)
+											FormatEx(buffer_teamtext_humans[iIndexHumans], sizeof(buffer_teamtext_humans[]), "%s[%d]: %N", entArray[index][ent_shortname], entArray[index][ent_cooldowntime], entArray[index][ent_ownerid]);
+										else
+											FormatEx(buffer_teamtext_humans[iIndexHumans], sizeof(buffer_teamtext_humans[]), "%s[%d/%d]: %N", entArray[index][ent_shortname], entArray[index][ent_uses], entArray[index][ent_maxuses], entArray[index][ent_ownerid]);
+									}
+									default:
+									{
+										FormatEx(buffer_teamtext_humans[iIndexHumans], sizeof(buffer_teamtext_humans[]), "%s[N/A]: %N", entArray[index][ent_shortname], entArray[index][ent_ownerid]);
+									}
 								}
 							}
 						}
-						else
-						{
-							Format(buffer_temp, sizeof(buffer_temp), "%s[%s]: ", entArray[index][ent_shortname], "N/A");
-							Format(buffer_name, sizeof(buffer_name), "%N",entArray[index][ent_ownerid]);
-							if(GetClientTeam(entArray[index][ent_ownerid])==3)
-							{
-								ShowCools[ItemIdx] = buffer_temp;
-								ShowCoolsPlayerName[ItemIdx] = buffer_name;
-								ItemIdx++;
-							}
-						}
-					}
-					else
+					} else
 					{
-						Format(buffer_temp, sizeof(buffer_temp), "%s: ", entArray[index][ent_shortname]);
-						Format(buffer_name, sizeof(buffer_name), "%N",entArray[index][ent_ownerid]);
-						if(GetClientTeam(entArray[index][ent_ownerid])==3)
+						if(GetClientTeam(entArray[index][ent_ownerid])==2 && iIndexZombies < MAXSHOWHUDITEMS-1)//ZM
 						{
-							ShowCools[ItemIdx] = buffer_temp;
-							ShowCoolsPlayerName[ItemIdx] = buffer_name;
-							ItemIdx++;
+							iIndexZombies++;
+							if(entArray[index][ent_delay] > 0)
+								FormatEx(buffer_teamtext_zombies[iIndexZombies], sizeof(buffer_teamtext_zombies[]), "%s[%d]: %N", entArray[index][ent_shortname], entArray[index][ent_delay], entArray[index][ent_ownerid]);
+							else
+								FormatEx(buffer_teamtext_zombies[iIndexZombies], sizeof(buffer_teamtext_zombies[]), "%s: %N", entArray[index][ent_shortname], entArray[index][ent_ownerid]);
+						}else if(GetClientTeam(entArray[index][ent_ownerid])==3 && iIndexHumans < MAXSHOWHUDITEMS-1)//Humans
+						{
+							iIndexHumans++;
+							if(entArray[index][ent_delay] > 0)
+								FormatEx(buffer_teamtext_humans[iIndexHumans], sizeof(buffer_teamtext_humans[]), "%s[%d]: %N", entArray[index][ent_shortname], entArray[index][ent_delay], entArray[index][ent_ownerid]);
+							else
+								FormatEx(buffer_teamtext_humans[iIndexHumans], sizeof(buffer_teamtext_humans[]), "%s: %N", entArray[index][ent_shortname], entArray[index][ent_ownerid]);
 						}
-					}
-					if (strlen(buffer_temp) + strlen(buffer_teamtext[GetClientTeam(entArray[index][ent_ownerid])]) <= sizeof(buffer_teamtext[]))
-					{
-						StrCat(buffer_teamtext[GetClientTeam(entArray[index][ent_ownerid])], sizeof(buffer_teamtext[]), buffer_temp);
 					}
 				}
 			}
-			
-			for( int idx=1 ; idx <ItemIdx;idx++)
-			{
-				StrCat(buffer_hud,512,ShowCools[idx]);
-				StrCat(buffer_hud,512,ShowCoolsPlayerName[idx]);
-				if(idx != ItemIdx-1)
+			if(iIndexZombies>-1)
+				for(int i=0; i <= iIndexZombies; i++)
 				{
-					StrCat(buffer_hud,512,"\n");
+					StrCat(sMessageZombies,sizeof(sMessageZombies),buffer_teamtext_zombies[i]);
+					if(i!=iIndexZombies)
+						StrCat(sMessageZombies,sizeof(sMessageZombies),"\n");
+				}
+			if(iIndexHumans>-1)
+				for(int i=0; i <= iIndexHumans; i++)
+				{
+					StrCat(sMessageHumans,sizeof(sMessageHumans),buffer_teamtext_humans[i]);
+					if(i!=iIndexHumans)
+						StrCat(sMessageHumans,sizeof(sMessageHumans),"\n");
+				}
+			if(iIndexZombies>-1 || iIndexHumans>-1)
+			{
+				for(int i=0; i <= iIndexHumans; i++)
+				{
+					StrCat(sMessageAdmins,sizeof(sMessageAdmins),buffer_teamtext_humans[i]);
+					if(i!=iIndexHumans)
+						StrCat(sMessageAdmins,sizeof(sMessageAdmins),"\n");
+				}
+				if(iIndexHumans>-1 && iIndexZombies>-1) StrCat(sMessageAdmins,sizeof(sMessageAdmins),"\n");
+				for(int i=0; i <= iIndexZombies; i++)
+				{
+					StrCat(sMessageAdmins,sizeof(sMessageAdmins),buffer_teamtext_zombies[i]);
+					if(i!=iIndexZombies)
+						StrCat(sMessageAdmins,sizeof(sMessageAdmins),"\n");
 				}
 			}
-			
-			if(ItemIdx >= 2)
+			if(iIndexZombies>-1 || iIndexHumans>-1)
 			{
 				for(int i = 1; i <= MaxClients; i++)
 				{
-					if(IsClientInGame(i) && !IsFakeClient(i))
+					if(IsClientInGame(i) && !IsFakeClient(i) && g_bDisplay[i])
 					{
-						if (g_bDisplay2[i])
+						if((HudPosition[i][0] < 0.0) || (HudPosition[i][1] < 0.0))
 						{
-							if((HudPosition[i][0] < 0.0) || (HudPosition[i][1] < 0.0))
-							{
-								if((HudColor[i][0] < 0) || (HudColor[i][0] > 255) || (HudColor[i][1] < 0) || (HudColor[i][1] > 255) || (HudColor[i][2] < 0) || (HudColor[i][2] > 255))
-								{
-									SetHudTextParams(g_DefaultHudPos[0], g_DefaultHudPos[1], 1.1, g_DefaultHudColor[0], g_DefaultHudColor[1], g_DefaultHudColor[2], 255, 0, 0.0, 0.0, 0.0);
-								} else 
-								{
-									SetHudTextParams(g_DefaultHudPos[0], g_DefaultHudPos[1], 1.1, HudColor[i][0], HudColor[i][1], HudColor[i][2], 255, 0, 0.0, 0.0, 0.0);
-								}
-							}
-							else
-							{
-								if((HudColor[i][0] < 0) || (HudColor[i][0] > 255) || (HudColor[i][1] < 0) || (HudColor[i][1] > 255) || (HudColor[i][2] < 0) || (HudColor[i][2] > 255))
-								{
-									SetHudTextParams(HudPosition[i][0], HudPosition[i][1], 1.1, g_DefaultHudColor[0], g_DefaultHudColor[1], g_DefaultHudColor[2], 255, 0, 0.0, 0.0, 0.0);
-								} else 
-								{
-									SetHudTextParams(HudPosition[i][0], HudPosition[i][1], 1.1, HudColor[i][0], HudColor[i][1], HudColor[i][2], 255, 0, 0.0, 0.0, 0.0);
-								}
-							}
-							#if defined DYNAMIC_CHANNELS
-							ShowHudText(i, GetDynamicChannel(g_iHUDChannel), buffer_hud);
-							#else
-							ShowHudText(i, g_iHUDChannel, buffer_hud);
-							#endif
+							if((HudColor[i][0] < 0) || (HudColor[i][0] > 255) || (HudColor[i][1] < 0) || (HudColor[i][1] > 255) || (HudColor[i][2] < 0) || (HudColor[i][2] > 255))
+								SetHudTextParams(g_DefaultHudPos[0], g_DefaultHudPos[1], 1.1, g_DefaultHudColor[0], g_DefaultHudColor[1], g_DefaultHudColor[2], 255, 0, 0.0, 0.0, 0.0);
+							else 
+								SetHudTextParams(g_DefaultHudPos[0], g_DefaultHudPos[1], 1.1, HudColor[i][0], HudColor[i][1], HudColor[i][2], 255, 0, 0.0, 0.0, 0.0);
 						}
-					}
-				}
-			}
-			else if(ItemIdx <= 1)
-			{
-				return Plugin_Continue;
-			}
-			for (int ply = 1; ply <= MaxClients; ply++)
-			{
-				if (IsClientConnected(ply) && IsClientInGame(ply))
-				{
-					if (g_bDisplay[ply])
-					{
-						char buffer_text[512];
-						
-						for (int teamid = 0; teamid < sizeof(buffer_teamtext); teamid++)
+						else
 						{
-							if (!GetConVarBool(g_hCvar_ModeTeamOnly) || (GetConVarBool(g_hCvar_ModeTeamOnly) && GetClientTeam(ply) == teamid || !IsPlayerAlive(ply) || CheckCommandAccess(ply, "entWatch_chat", ADMFLAG_CHAT)))
-							{
-								if (strlen(buffer_teamtext[teamid]) + strlen(buffer_text) <= sizeof(buffer_text))
-								{
-									StrCat(buffer_text, sizeof(buffer_text), buffer_teamtext[teamid]);
-								}
-							}
+							if((HudColor[i][0] < 0) || (HudColor[i][0] > 255) || (HudColor[i][1] < 0) || (HudColor[i][1] > 255) || (HudColor[i][2] < 0) || (HudColor[i][2] > 255))
+								SetHudTextParams(HudPosition[i][0], HudPosition[i][1], 1.1, g_DefaultHudColor[0], g_DefaultHudColor[1], g_DefaultHudColor[2], 255, 0, 0.0, 0.0, 0.0);
+							else 
+								SetHudTextParams(HudPosition[i][0], HudPosition[i][1], 1.1, HudColor[i][0], HudColor[i][1], HudColor[i][2], 255, 0, 0.0, 0.0, 0.0);
+						}
+						int iFlags = GetUserFlagBits(i);
+						if(g_bAdminsSee && (iFlags & ADMFLAG_KICK || iFlags & ADMFLAG_ROOT))
+						{
+							#if defined DYNAMIC_CHANNELS
+							ShowHudText(i, GetDynamicChannel(g_iHUDChannel), sMessageAdmins);
+							#else
+							ShowHudText(i, g_iHUDChannel, sMessageAdmins);
+							#endif
+						}else if(g_bTeamOnly && GetClientTeam(i)==3 && iIndexHumans>-1)
+						{
+							#if defined DYNAMIC_CHANNELS
+							ShowHudText(i, GetDynamicChannel(g_iHUDChannel), sMessageHumans);
+							#else
+							ShowHudText(i, g_iHUDChannel, sMessageHumans);
+							#endif
+						}else if(g_bTeamOnly && GetClientTeam(i)==2 && iIndexZombies>-1)
+						{
+							#if defined DYNAMIC_CHANNELS
+							ShowHudText(i, GetDynamicChannel(g_iHUDChannel), sMessageZombies);
+							#else
+							ShowHudText(i, g_iHUDChannel, sMessageZombies);
+							#endif
+						}else
+						{
+							#if defined DYNAMIC_CHANNELS
+							ShowHudText(i, GetDynamicChannel(g_iHUDChannel), sMessageAdmins);
+							#else
+							ShowHudText(i, g_iHUDChannel, sMessageAdmins);
+							#endif
 						}
 					}
 				}
@@ -2890,18 +2922,41 @@ public Action Command_HudColor(int client, int args)
 
 public Action Command_ToggleHUD(int client, int args)
 {
-	if (g_bDisplay2[client])
+	if (g_bDisplay[client])
 	{
 		CPrintToChat(client, "\x07%s[entWatch] \x0b%t", color_tag, "display disabled");
-		g_bDisplay2[client] = false;
+		g_bDisplay[client] = false;
+		SetClientCookie(client, g_hCookie_Display, "0");
 	}
 	else
 	{
 		CPrintToChat(client, "\x07%s[entWatch] \x07%t", color_tag, "display enabled");
-		g_bDisplay2[client] = true;
+		g_bDisplay[client] = true;
+		SetClientCookie(client, g_hCookie_Display, "1");
 	}
 	return Plugin_Handled;
 }
+
+#if defined ENTWATCH_USE_PRIORITY
+public Action OnPlayerRunCmd(int client, int &buttons, int &impulse, float[3] vel, float[3] angles, int &weapon)
+{
+	if(buttons & IN_USE)
+	{
+		if (g_bConfigLoaded && !g_bRoundTransition)
+		{
+			for (int index = 0; index < entArraySize; index++)
+			{
+				if(entArray[index][ent_ownerid]==client && IsValidEdict(entArray[index][ent_buttonid]))
+				{
+					AcceptEntityInput(entArray[index][ent_buttonid], "Use", client, client); 
+					break;
+				}
+			}
+		}
+	}
+	return Plugin_Continue;
+}
+#endif
 
 stock int GetSlotCSGO(int eWeapon)
 {

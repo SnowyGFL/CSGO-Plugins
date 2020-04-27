@@ -1,4 +1,5 @@
 #pragma semicolon 1
+//#pragma newdecls required
 
 #include <sourcemod>
 #include <sdktools>
@@ -28,7 +29,8 @@ ConVar	cvar_Enable,
 		cvar_Immunity,
 		cvar_MinPlayers,
 		cvar_MaxMoney,
-		cvar_ShowDamage;
+		cvar_ShowDamage,
+		cvar_MinPlPerk;
 
 float	g_fCashDiv = 20.0;
 int		g_iMaxMoney = 16000;
@@ -95,17 +97,20 @@ bool g_bImmunity[MAXPLAYERS+1] = {false,...};
 int g_iChance = 100;
 int g_iMinPlayersImmunity = 15;
 int g_iInfectedChance = 0;
+int g_iMinPlayersPerk = 10;
 
-public Plugin:myinfo = 
+bool g_bWarmUp = false;
+
+public Plugin myinfo = 
 {
 	name = "[ZR] TopDefenders with Perk CS:GO",
 	author = "DarkerZ [RUS]",
 	description = "Shows damage by zombies and gives perk for the top",
-	version = "2.1",
+	version = "2.3.1",
 	url = "dark-skill.ru"
 }
 
-public OnPluginStart()
+public void OnPluginStart()
 {
 	LoadTranslations("topdefenders_perk.phrases");
 	
@@ -132,6 +137,7 @@ public OnPluginStart()
 	cvar_InfectorPerk = CreateConVar("sm_topdefenders_infectors_perk", "1", "[TopDefenders] Gives Infector perk for the top", _, true, 0.0, true, 1.0);
 	cvar_Immunity = CreateConVar("sm_topdefenders_immunity_chance", "100", "[TopDefenders] Immunity Chance", _, true, 0.0, true, 100.0);
 	cvar_MinPlayers = CreateConVar("sm_topdefenders_immunity_minplayers", "15", "[TopDefenders] Minimum players for immunity", _, true, 10.0, true, 64.0);
+	cvar_MinPlPerk = CreateConVar("sm_topdefenders_perk_minplayers", "10", "[TopDefenders] Minimum players for give Perk and Credits", _, true, 1.0, true, 64.0);
 	cvar_MaxMoney = FindConVar("mp_maxmoney");
 	
 	HookEvent("player_hurt", Event_PlayerHurt);
@@ -152,12 +158,15 @@ public OnPluginStart()
 	HookConVarChange(cvar_Immunity, Cvar_Changed);
 	HookConVarChange(cvar_MinPlayers, Cvar_Changed);
 	HookConVarChange(cvar_MaxMoney, Cvar_Changed);
+	HookConVarChange(cvar_MinPlPerk, Cvar_Changed);
 	
 	RegConsoleCmd("sm_pr", PerkRemove, "[TopDefender] Remove Perk from yourself");
 	
 	RegAdminCmd("sm_topdefenders_config_test1", ConfigTest_Defenders, ADMFLAG_ROOT, "[TopDefenders] Config Test Defenders");
 	RegAdminCmd("sm_topdefenders_config_test2", ConfigTest_Infectors, ADMFLAG_ROOT, "[TopDefenders] Config Test Infectors");
 	RegAdminCmd("sm_topdefenders_refresh", ConfigRefresh, ADMFLAG_CONVARS, "[TopDefenders] Refresh Config");
+	
+	AutoExecConfig(true, "topdefenders_perk");
 	
 	g_hHudDefender = CreateHudSynchronizer();
 	g_hHudInfector = CreateHudSynchronizer();
@@ -184,9 +193,11 @@ public void Cvar_Changed(ConVar convar, const char[] oldValue, const char[] newV
 	if(convar==cvar_MinPlayers)
 		g_iMinPlayersImmunity = GetConVarInt(convar);
 	if(convar==cvar_MaxMoney)
-		g_iMaxMoney= GetConVarInt(convar);
+		g_iMaxMoney = GetConVarInt(convar);
 	if(convar==cvar_ShowDamage)
 		g_bShowDamage = GetConVarBool(convar);
+	if(convar==cvar_MinPlPerk)
+		g_iMinPlayersPerk = GetConVarInt(convar);
 }
 
 public void OnMapStart()
@@ -197,7 +208,7 @@ public void OnMapStart()
 	CreateTimer(5.0, Check_Human_Alive, _, TIMER_REPEAT|TIMER_FLAG_NO_MAPCHANGE);
 }
 
-public OnClientConnected(client)
+public void OnClientConnected(int client)
 {
 	if(!g_bEnable) return;
 	//wipe client
@@ -210,7 +221,7 @@ public OnClientConnected(client)
 	g_bImmunity[client] = false;
 }
 
-public OnClientDisconnect(client)
+public void OnClientDisconnect(int client)
 {
 	if(!g_bEnable) return;
 	//wipe client
@@ -222,9 +233,14 @@ public OnClientDisconnect(client)
 	g_bImmunity[client] = false;
 }
 
-public Event_RoundStart(Handle:event, const String:name[], bool:dontBroadcast)
+public Action Event_RoundStart(Handle event, const char[] name, bool dontBroadcast)
 {
 	if(!g_bEnable) return;
+	
+	if (GameRules_GetProp("m_bWarmupPeriod") == 1) g_bWarmUp = true;
+	else if (GameRules_GetProp("m_bWarmupPeriod") == 0) g_bWarmUp = false;
+	
+	if(g_bWarmUp) return;
 	
 	g_iInfectedChance = 0;
 	
@@ -232,9 +248,9 @@ public Event_RoundStart(Handle:event, const String:name[], bool:dontBroadcast)
 	{
 		g_bImmunity[client] = false;
 	}
-	
-	if(g_bPerk) GivePerk_TopDefender();
-	if(g_bInfectorEnable && g_bInfectorPerk) GivePerk_TopInfector();
+	int iIngamePlayers = GetIngamePlayers();
+	if(g_bPerk && iIngamePlayers >= g_iMinPlayersPerk) GivePerk_TopDefender();
+	if(g_bInfectorEnable && g_bInfectorPerk && iIngamePlayers >= g_iMinPlayersPerk) GivePerk_TopInfector();
 	
 	//wipe clients
 	for (int client = 1; client <= MaxClients; client++)
@@ -248,9 +264,24 @@ public Event_RoundStart(Handle:event, const String:name[], bool:dontBroadcast)
 	}
 }
 
-public Event_RoundEnd(Handle:event, const String:name[], bool:dontBroadcast)
+public Action Event_RoundEnd(Handle event, const char[] name, bool dontBroadcast)
 {
 	if(!g_bEnable) return;
+	
+	if(g_bWarmUp)
+	{
+		//wipe clients
+		for (int client = 1; client <= MaxClients; client++)
+		{
+			if(IsValidEdict(client) && IsClientInGame(client))
+				SetEntProp(client, Prop_Data, "m_iDeaths", 0);
+			g_iPlayerDamage[client] = 0;
+			g_iPlayerKill[client] = 0;
+			g_iPlayerInfect[client] = 0;
+			g_iTopNextRound[client] = 0;
+		}
+		return;
+	}
 	
 	char sHUD[4096] = "";
 	CPrintToChatAll("%t", "Chat Top Defenders");
@@ -262,30 +293,37 @@ public Event_RoundEnd(Handle:event, const String:name[], bool:dontBroadcast)
 		iSortDamage[i] = g_iPlayerDamage[i];
 	}
 	//sort
-	SortIntegers(iSortDamage, MaxClients, Sort_Descending);
+	SortIntegers(iSortDamage, MaxClients+1, Sort_Descending);
 	int iCount = 0;
 	int iSDindex = 0;
+	int iIgnoreLast = 0;
+	bool bMasNoEnd = true;
 	while(iCount<g_iTopCount)
 	{
-		if(iSortDamage[iSDindex]!=0)
+		if(iSortDamage[iSDindex]!=0 && bMasNoEnd)
 		{
-			for (int i = 1; i <= MaxClients; i++)
+			if(iSortDamage[iSDindex]!=iIgnoreLast)
 			{
-				if (g_iPlayerDamage[i]==iSortDamage[iSDindex])
+				iIgnoreLast = iSortDamage[iSDindex];
+				for (int i = 1; i <= MaxClients; i++)
 				{
-					iCount++;
-					char clientname[32];
-					GetClientName(i, clientname, sizeof(clientname));
-					if(iCount==1) CPrintToChatAll("%t", "Chat Top DefFirst",iCount, i, g_iPlayerDamage[i]);
-					if(iCount==2) CPrintToChatAll("%t", "Chat Top DefSecond",iCount, i, g_iPlayerDamage[i]);
-					if(iCount==3) CPrintToChatAll("%t", "Chat Top DefThird",iCount, i, g_iPlayerDamage[i]);
-					if((iCount!=1)&&(iCount!=2)&&(iCount!=3)) CPrintToChatAll("%t", "Chat Top DefOther",iCount, i, g_iPlayerDamage[i]);
-					Format(sHUD, sizeof(sHUD), "%s\n%t", sHUD, "HUD Top DefPosition", iCount, i, g_iPlayerDamage[i]);
-					g_iTopNextRound[i]=iCount;
+					if (g_iPlayerDamage[i]==iSortDamage[iSDindex])
+					{
+						iCount++;
+						char clientname[32];
+						GetClientName(i, clientname, sizeof(clientname));
+						if(iCount==1) CPrintToChatAll("%t", "Chat Top DefFirst",iCount, i, g_iPlayerDamage[i]);
+						if(iCount==2) CPrintToChatAll("%t", "Chat Top DefSecond",iCount, i, g_iPlayerDamage[i]);
+						if(iCount==3) CPrintToChatAll("%t", "Chat Top DefThird",iCount, i, g_iPlayerDamage[i]);
+						if((iCount!=1)&&(iCount!=2)&&(iCount!=3)) CPrintToChatAll("%t", "Chat Top DefOther",iCount, i, g_iPlayerDamage[i]);
+						Format(sHUD, sizeof(sHUD), "%s\n%t", sHUD, "HUD Top DefPosition", iCount, i, g_iPlayerDamage[i]);
+						g_iTopNextRound[i]=iCount;
+					}
+					if(iCount==g_iTopCount) break;
 				}
-				if(iCount==g_iTopCount) break;
 			}
-			iSDindex++;
+			if(iSDindex<MaxClients) iSDindex++;
+			else bMasNoEnd = false;
 		}else
 		{
 			iCount++;
@@ -294,12 +332,15 @@ public Event_RoundEnd(Handle:event, const String:name[], bool:dontBroadcast)
 		}
 	}
 	SetHudTextParams(Config_HUD_Defender_x, Config_HUD_Defender_y, 10.0, Config_HUD_Defender_Color[0], Config_HUD_Defender_Color[1], Config_HUD_Defender_Color[2], Config_HUD_Defender_Color[3], 0, 1.0, 0.02, 0.05);
+	#if defined SHOP
+	int iPlayers = GetIngamePlayers();
+	#endif
 	for (int i = 1; i <= MaxClients; i++)
 	{
 		if (IsValidClient(i) && IsClientInGame(i) && (IsFakeClient(i) == false))
 		{
 			#if defined SHOP
-			if(g_iTopNextRound[i]>0)
+			if(iPlayers>=g_iMinPlayersPerk && g_iTopNextRound[i]>0)
 			{
 				int iPlace=g_iTopNextRound[i]-1;
 				if(iPlace>3) iPlace=3;
@@ -324,30 +365,37 @@ public Event_RoundEnd(Handle:event, const String:name[], bool:dontBroadcast)
 			iSortDamage[i] = g_iPlayerInfect[i];
 		}
 		//sort
-		SortIntegers(iSortDamage, MaxClients, Sort_Descending);
+		SortIntegers(iSortDamage, MaxClients+1, Sort_Descending);
 		iCount = 0;
 		iSDindex = 0;
+		iIgnoreLast = 0;
+		bMasNoEnd = true;
 		while(iCount<g_iInfectorTopCount)
 		{
-			if(iSortDamage[iSDindex]!=0)
+			if(iSortDamage[iSDindex]!=0 && bMasNoEnd)
 			{
-				for (int i = 1; i <= MaxClients; i++)
+				if(iSortDamage[iSDindex]!=iIgnoreLast)
 				{
-					if (g_iPlayerInfect[i]==iSortDamage[iSDindex])
+					iIgnoreLast = iSortDamage[iSDindex];
+					for (int i = 1; i <= MaxClients; i++)
 					{
-						iCount++;
-						char clientname[32];
-						GetClientName(i, clientname, sizeof(clientname));
-						if(iCount==1) CPrintToChatAll("%t", "Chat Top InfFirst", iCount, i, g_iPlayerInfect[i]);
-						if(iCount==2) CPrintToChatAll("%t", "Chat Top InfSecond", iCount, i, g_iPlayerInfect[i]);
-						if(iCount==3) CPrintToChatAll("%t", "Chat Top InfThird", iCount, i, g_iPlayerInfect[i]);
-						if((iCount!=1)&&(iCount!=2)&&(iCount!=3)) CPrintToChatAll("%t", "Chat Top InfOther", iCount, i, g_iPlayerInfect[i]);
-						Format(sHUD, sizeof(sHUD), "%s\n%t", sHUD, "HUD Top InfPosition", iCount, i, g_iPlayerInfect[i]);
-						g_iTopNextRound[i]=-iCount;
+						if (g_iPlayerInfect[i]==iSortDamage[iSDindex])
+						{
+							iCount++;
+							char clientname[32];
+							GetClientName(i, clientname, sizeof(clientname));
+							if(iCount==1) CPrintToChatAll("%t", "Chat Top InfFirst", iCount, i, g_iPlayerInfect[i]);
+							if(iCount==2) CPrintToChatAll("%t", "Chat Top InfSecond", iCount, i, g_iPlayerInfect[i]);
+							if(iCount==3) CPrintToChatAll("%t", "Chat Top InfThird", iCount, i, g_iPlayerInfect[i]);
+							if((iCount!=1)&&(iCount!=2)&&(iCount!=3)) CPrintToChatAll("%t", "Chat Top InfOther", iCount, i, g_iPlayerInfect[i]);
+							Format(sHUD, sizeof(sHUD), "%s\n%t", sHUD, "HUD Top InfPosition", iCount, i, g_iPlayerInfect[i]);
+							g_iTopNextRound[i]=-iCount;
+						}
+						if(iCount==g_iInfectorTopCount) break;
 					}
-					if(iCount==g_iInfectorTopCount) break;
 				}
-				iSDindex++;
+				if(iSDindex<MaxClients) iSDindex++;
+				else bMasNoEnd = false;
 			}else
 			{
 				iCount++;
@@ -361,7 +409,7 @@ public Event_RoundEnd(Handle:event, const String:name[], bool:dontBroadcast)
 			if (IsValidClient(i) && IsClientInGame(i) && (IsFakeClient(i) == false))
 			{
 				#if defined SHOP
-				if(g_iTopNextRound[i]<0)
+				if(iPlayers>=g_iMinPlayersPerk && g_iTopNextRound[i]<0)
 				{
 					int iPlace=-g_iTopNextRound[i]-1;
 					if(iPlace>3) iPlace=3;
@@ -378,7 +426,7 @@ public Event_RoundEnd(Handle:event, const String:name[], bool:dontBroadcast)
 	}
 }
 
-public Action:Event_PlayerSpawn(Handle:event, const String:name[], bool:dontBroadcast)
+public Action Event_PlayerSpawn(Handle event, const char[] name, bool dontBroadcast)
 {
 	int client = GetClientOfUserId(GetEventInt(event, "userid"));
 	g_bBlockTimer[client] = false;
@@ -386,7 +434,7 @@ public Action:Event_PlayerSpawn(Handle:event, const String:name[], bool:dontBroa
 	return Plugin_Continue;
 }
 
-public Event_PlayerDeath(Handle:event, const char[] name, bool dontBroadcast)
+public Action Event_PlayerDeath(Handle event, const char[] name, bool dontBroadcast)
 {
 	if(!g_bEnable||!g_bShowDamage) return;
 	int client  = GetClientOfUserId(GetEventInt(event, "userid"));
@@ -401,7 +449,7 @@ public Event_PlayerDeath(Handle:event, const char[] name, bool dontBroadcast)
 		}
 }
 
-public Event_PlayerHurt(Handle:event, const String:name[], bool:dontBroadcast)
+public Action Event_PlayerHurt(Handle event, const char[] name, bool dontBroadcast)
 {
 	if(!g_bEnable) return;
 	int client  = GetClientOfUserId(GetEventInt(event, "userid"));
@@ -426,7 +474,7 @@ public Event_PlayerHurt(Handle:event, const String:name[], bool:dontBroadcast)
 		}
 }
 
-CalcDamage(attacker, iDmg)
+void CalcDamage(int attacker, int iDmg)
 {	
 	if (!IsClientInGame(attacker)) return;
 	
@@ -438,7 +486,7 @@ CalcDamage(attacker, iDmg)
 	g_bBlockTimer[attacker] = true;
 }
 
-public Action:ShowDamageHuman(Handle:timer, any:client)
+public Action ShowDamageHuman(Handle timer, any client)
 {
 	g_bBlockTimer[client] = false;
 	if(IsValidClient(client) && IsClientInGame(client))
@@ -448,7 +496,7 @@ public Action:ShowDamageHuman(Handle:timer, any:client)
 	}
 }
 
-public GivePerk_TopDefender()
+public void GivePerk_TopDefender()
 {
 	if(Cfg_Loaded)
 		for(int i=1;i<=g_iTopCount;i++)
@@ -479,7 +527,7 @@ public GivePerk_TopDefender()
 		}
 }
 
-public GivePerk_TopInfector()
+public void GivePerk_TopInfector()
 {
 	if(Cfg_Loaded)
 		for(int i=1;i<=g_iInfectorTopCount;i++)
@@ -510,7 +558,7 @@ public GivePerk_TopInfector()
 		}
 }
 
-public SpriteSet(int client, int iPlace, bool bDefender)
+public void SpriteSet(int client, int iPlace, bool bDefender)
 {
 	if(IsValidClient(client) && IsClientInGame(client) && ((GetClientTeam(client) == CS_TEAM_T) || (GetClientTeam(client) == CS_TEAM_CT)) && IsPlayerAlive(client))
 	{
@@ -560,7 +608,7 @@ public SpriteSet(int client, int iPlace, bool bDefender)
 	}
 }
 
-public TrailSet(int client, int iPlace, bool bDefender)
+public void TrailSet(int client, int iPlace, bool bDefender)
 {
 	if(IsValidClient(client) && IsClientInGame(client) && ((GetClientTeam(client) == CS_TEAM_T) || (GetClientTeam(client) == CS_TEAM_CT)) && IsPlayerAlive(client))
 	{
@@ -626,7 +674,7 @@ public TrailSet(int client, int iPlace, bool bDefender)
 	}
 }
 
-public ModelSet(int client, int iPlace, bool bDefender)
+public void ModelSet(int client, int iPlace, bool bDefender)
 {
 	if(IsValidClient(client) && IsClientInGame(client) && ((GetClientTeam(client) == CS_TEAM_T) || (GetClientTeam(client) == CS_TEAM_CT)) && IsPlayerAlive(client))
 	{
@@ -681,12 +729,7 @@ public Action ZR_OnClientInfect(int &client, int &attacker, bool &motherInfect, 
 	if(!g_bEnable) return Plugin_Continue;
 	if(motherInfect && g_bImmunity[client] && GetRandomInt(0, 100) <= g_iChance)
 	{
-		int iCount = 0;
-		for (int i = 1; i <= MaxClients; i++)
-		{  
-			if (IsClientInGame(i) && IsPlayerAlive(i)) iCount++;
-		}
-		if(iCount<g_iMinPlayersImmunity) return Plugin_Continue;
+		if(GetIngamePlayers()<g_iMinPlayersImmunity) return Plugin_Continue;
 		++g_iInfectedChance;
 		Handle dPack;
 		CreateDataTimer(g_iInfectedChance * 0.1, Rescued, dPack);
@@ -696,6 +739,16 @@ public Action ZR_OnClientInfect(int &client, int &attacker, bool &motherInfect, 
 		return Plugin_Handled;
 	}
 	return Plugin_Continue;
+}
+
+public int GetIngamePlayers()
+{
+	int iCount = 0;
+	for (int i = 1; i <= MaxClients; i++)
+	{  
+		if (IsClientInGame(i) && IsPlayerAlive(i)) iCount++;
+	}
+	return iCount;
 }
 
 public int ZR_OnClientInfected(int client, int attacker, bool motherInfect, bool respawnOverride, bool respawn)
@@ -740,7 +793,7 @@ public int FindNewInfected(int client)
 	return (clientCount == 0) ? 0 : clients[GetRandomInt(0, clientCount-1)];
 }
 
-public ReloadCfgFile()
+public void ReloadCfgFile()
 {
 	for(int i=0; i<4;i++)
 	{
@@ -884,7 +937,7 @@ public ReloadCfgFile()
 	Cfg_Loaded = true;
 }
 
-public AddToDownload()
+public void AddToDownload()
 {
 	char ConfigFile[PLATFORM_MAX_PATH];
 	BuildPath(Path_SM, ConfigFile, sizeof(ConfigFile), "configs/topdefenders_downloadlist.ini");
@@ -903,13 +956,13 @@ public AddToDownload()
 		LogError("[ERROR] Don't open file: %s", ConfigFile);
 }
 
-public Action ConfigRefresh(client, args)
+public Action ConfigRefresh(int client, int args)
 {
 	ReloadCfgFile();
 	CPrintToChatAll("%t", "Config Refresh");
 }
 
-public Action ConfigTest_Defenders(client, args)
+public Action ConfigTest_Defenders(int client, int args)
 {
 	ReloadCfgFile();
 	CPrintToChat(client, "{green}[TopDefenders] {default}Config Test");
@@ -939,7 +992,7 @@ public Action ConfigTest_Defenders(client, args)
 	}
 }
 
-public Action ConfigTest_Infectors(client, args)
+public Action ConfigTest_Infectors(int client, int args)
 {
 	ReloadCfgFile();
 	CPrintToChat(client, "{red}[TopInfectors] {default}Config Test");
@@ -970,7 +1023,7 @@ public Action ConfigTest_Infectors(client, args)
 }
 
 //remove perk on death
-public Action Check_Human_Alive(Handle:timer)
+public Action Check_Human_Alive(Handle timer)
 {
 	if(g_bPerk || g_bInfectorPerk)
 	{
@@ -981,7 +1034,6 @@ public Action Check_Human_Alive(Handle:timer)
 				if(g_iEntityPerk[client] != -1)
 				{
 					if(IsValidEdict(g_iEntityPerk[client])) AcceptEntityInput(g_iEntityPerk[client], "Kill");//kill perk
-					SetEntityRenderColor(client, 255, 255, 255, 255);//change color
 					g_iEntityPerk[client]=-1;
 				}
 			}
@@ -991,7 +1043,7 @@ public Action Check_Human_Alive(Handle:timer)
 }
 
 //command perk remove
-public Action PerkRemove(client, args)
+public Action PerkRemove(int client, int args)
 {
 	if(g_bPerk || g_bInfectorPerk)
 	{
@@ -1001,7 +1053,6 @@ public Action PerkRemove(client, args)
 			{
 				CPrintToChat(client, "%t", "Perk Remove");
 				if(IsValidEdict(g_iEntityPerk[client])) AcceptEntityInput(g_iEntityPerk[client], "Kill");//kill perk
-				SetEntityRenderColor(client, 255, 255, 255, 255);//change color
 				g_iEntityPerk[client]=-1;
 				SetEntPropFloat(client, Prop_Data, "m_flLaggedMovementValue", 1.0);//speed
 				SetEntityGravity(client, 1.0);//gravity
@@ -1012,7 +1063,7 @@ public Action PerkRemove(client, args)
 	}
 }
 
-stock bool:IsValidClient(client) 
+stock bool IsValidClient(int client) 
 { 
 	if (client > 0 && client <= MaxClients && IsValidEdict(client)) return true; 
 	return false; 
