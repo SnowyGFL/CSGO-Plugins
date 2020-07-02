@@ -51,6 +51,7 @@ bool g_bIsAdmin[MAXPLAYERS+1] = {false,...};
 #include "entwatch/module_glow.inc"
 #include "entwatch/module_use_priority.inc"
 #include "entwatch/module_extended_logs.inc"
+//#include "entwatch/module_physbox.inc" //Heavy module for the server. Not recommended. Need Collision Hook Ext https://forums.alliedmods.net/showthread.php?t=197815
 //#include "entwatch/module_debug.inc"
 //End Section Modules
 
@@ -63,7 +64,7 @@ public Plugin myinfo =
 	name = "EntWatch",
 	author = "DarkerZ[RUS]",
 	description = "Notify players about entity interactions.",
-	version = "3.DZ.1",
+	version = "3.DZ.10",
 	url = "dark-skill.ru"
 };
  
@@ -71,8 +72,13 @@ public void OnPluginStart()
 {
 	g_ItemConfig = new ArrayList(512);
 	g_ItemList = new ArrayList(512);
+	
 	#if defined EW_MODULE_EBAN
 	g_TriggerArray = new ArrayList(512);
+	#endif
+	
+	#if defined EW_MODULE_PHYSBOX
+	EWM_Physbox_OnPluginStart();
 	#endif
 	
 	//CVARs
@@ -85,6 +91,7 @@ public void OnPluginStart()
 	RegAdminCmd("sm_setcooldown", EW_Command_Cooldown, ADMFLAG_BAN);
 	RegAdminCmd("sm_setmaxuses", EW_Command_Setmaxuses, ADMFLAG_BAN);
 	RegAdminCmd("sm_addmaxuses", EW_Command_Addmaxuses, ADMFLAG_BAN);
+	RegAdminCmd("sm_ewsetmode", EW_Command_Setmode, ADMFLAG_BAN);
 	
 	//Hook CVARs
 	HookConVarChange(g_hCvar_TeamOnly, Cvar_Main_Changed);
@@ -155,6 +162,16 @@ public void OnMapStart()
 	#if defined EW_MODULE_EBAN
 	EWM_Eban_OnMapStart();
 	#endif
+	#if defined EW_MODULE_GLOW
+	EWM_Glow_OnMapStart();
+	#endif
+}
+
+public void OnMapEnd()
+{
+	#if defined EW_MODULE_GLOW
+	EWM_Glow_OnMapEnd();
+	#endif
 }
 
 public Action Event_RoundStart(Event hEvent, const char[] sName, bool bDontBroadcast)
@@ -192,6 +209,9 @@ public Action Event_RoundEnd(Event hEvent, const char[] sName, bool bDontBroadca
 		#if defined EW_MODULE_EBAN
 		g_TriggerArray.Clear();
 		#endif
+		#if defined EW_MODULE_PHYSBOX
+		EWM_Physbox_Event_RoundEnd();
+		#endif
 	}
 }
 
@@ -218,11 +238,34 @@ public Action Event_PlayerDeath(Event hEvent, const char[] sName, bool bDontBroa
 				EWM_ELogs_PlayerDeath(ItemTest, iClient);
 				#endif
 				
-				if(ItemTest.ForceDrop && IsValidEdict(ItemTest.WeaponID) && GetSlotCSGO(ItemTest.WeaponID) != -1) CS_DropWeapon(iClient, ItemTest.WeaponID, false);
-				
-				#if defined EW_MODULE_CHAT
-				else if(ItemTest.Chat) EWM_Chat_PlayerDeath(ItemTest, iClient);
-				#endif
+				if(IsValidEdict(ItemTest.WeaponID) && GetSlotCSGO(ItemTest.WeaponID) != -1)
+				{
+					if(ItemTest.ForceDrop) CS_DropWeapon(iClient, ItemTest.WeaponID, false);
+					else
+					{
+						if(GetSlotCSGO(ItemTest.WeaponID) == 2)
+						{
+							#if defined EW_MODULE_CHAT
+							if(ItemTest.Chat) EWM_Chat_PlayerDeath(ItemTest, iClient);
+							#endif
+							AcceptEntityInput(ItemTest.WeaponID, "Kill");
+						}else
+						{
+							#if defined EW_MODULE_CHAT
+							if(ItemTest.Chat)
+							{
+								ItemTest.Chat = false;
+								g_ItemList.SetArray(i, ItemTest, sizeof(ItemTest));
+								CS_DropWeapon(iClient, ItemTest.WeaponID, false);
+								ItemTest.Chat = true;
+								g_ItemList.SetArray(i, ItemTest, sizeof(ItemTest));
+								EWM_Chat_PlayerDeath(ItemTest, iClient);
+							} else
+							#endif
+							CS_DropWeapon(iClient, ItemTest.WeaponID, false);
+						}
+					}
+				}
 			}
 		}
 	}
@@ -269,15 +312,39 @@ public void OnClientDisconnect(int iClient)
 				ItemTest.OwnerID = INVALID_ENT_REFERENCE;
 				g_ItemList.SetArray(i, ItemTest, sizeof(ItemTest));
 				
-				#if defined EW_MODULE_GLOW
-				EWM_Glow_GlowWeapon(ItemTest, i, false);
-				#endif
-				
 				#if defined EW_MODULE_ELOGS
 				EWM_ELogs_Disconnect(ItemTest, iClient);
 				#endif
-				#if defined EW_MODULE_CHAT
-				if(ItemTest.Chat) EWM_Chat_Disconnect(ItemTest, iClient);
+				if(IsValidEdict(ItemTest.WeaponID) && GetSlotCSGO(ItemTest.WeaponID) != -1)
+				{
+					if(ItemTest.ForceDrop) CS_DropWeapon(iClient, ItemTest.WeaponID, false);
+					else
+					{
+						if(GetSlotCSGO(ItemTest.WeaponID) == 2)
+						{
+							#if defined EW_MODULE_CHAT
+							if(ItemTest.Chat) EWM_Chat_Disconnect(ItemTest, iClient);
+							#endif
+							AcceptEntityInput(ItemTest.WeaponID, "Kill");
+						}else
+						{
+							#if defined EW_MODULE_CHAT
+							if(ItemTest.Chat)
+							{
+								ItemTest.Chat = false;
+								g_ItemList.SetArray(i, ItemTest, sizeof(ItemTest));
+								CS_DropWeapon(iClient, ItemTest.WeaponID, false);
+								ItemTest.Chat = true;
+								g_ItemList.SetArray(i, ItemTest, sizeof(ItemTest));
+								EWM_Chat_Disconnect(ItemTest, iClient);
+							} else
+							#endif
+							CS_DropWeapon(iClient, ItemTest.WeaponID, false);
+						}
+					}
+				}
+				#if defined EW_MODULE_GLOW
+				EWM_Glow_GlowWeapon(ItemTest, i, false);
 				#endif
 			}
 		}
@@ -418,6 +485,9 @@ stock void LoadConfig()
 			KvGetString(hKeyValues, "pt_spawner", sBuffer_temp, sizeof(sBuffer_temp));
 			FormatEx(NewItem.Spawner, sizeof(NewItem.Spawner), "%s", sBuffer_temp);
 			
+			KvGetString(hKeyValues, "physbox", sBuffer_temp, sizeof(sBuffer_temp));
+			NewItem.PhysBox = StrEqual(sBuffer_temp, "true", false);
+			
 			g_ItemConfig.PushArray(NewItem, sizeof(NewItem));
 		} while (KvGotoNextKey(hKeyValues));
 		g_bConfigLoaded = true;
@@ -460,7 +530,7 @@ stock void LoadScheme()
 		return;
 	}
 	
-	char szBuffer[16];
+	char szBuffer[64];
 	KvConfig.Rewind();
 	
 	KvConfig.GetString("color_tag", szBuffer, sizeof(szBuffer));
@@ -545,6 +615,8 @@ public bool RegisterItem(class_ItemConfig ItemConfig, int iEntity, int iHammerID
 		
 		NewItem.Delay = g_iDelayUse;
 		NewItem.GlowEnt = INVALID_ENT_REFERENCE;
+		
+		NewItem.PhysBox = ItemConfig.PhysBox;
 		//PrintToServer("[EW]Item Spawned: %s |%i", NewItem.ShortName, iEntity);
 		g_ItemList.PushArray(NewItem, sizeof(NewItem));
 		
@@ -574,7 +646,7 @@ public bool RegisterButton(class_ItemList ItemInstance, int iEntity)
 		char Item_Weapon_Targetname[32], Item_Weapon_Parent[32];
 		Entity_GetTargetName(ItemInstance.WeaponID, Item_Weapon_Targetname, sizeof(Item_Weapon_Targetname));
 		Entity_GetParentName(iEntity, Item_Weapon_Parent, sizeof(Item_Weapon_Parent));
-		if (StrEqual(Item_Weapon_Targetname, Item_Weapon_Parent))
+		if (!StrEqual(Item_Weapon_Targetname,"") && StrEqual(Item_Weapon_Targetname, Item_Weapon_Parent))
 		{
 			if(ItemInstance.ButtonID == INVALID_ENT_REFERENCE) ItemInstance.ButtonID = Entity_GetHammerID(iEntity);
 			SDKHookEx(iEntity, SDKHook_Use, OnButtonUse);
@@ -594,6 +666,9 @@ public void OnEntityCreated(int iEntity, const char[] sClassname)
 			StrEqual(sClassname,"func_door")||StrEqual(sClassname,"func_door_rotating")) SDKHook(iEntity, SDKHook_SpawnPost, OnButtonSpawned);
 		#if defined EW_MODULE_EBAN
 		else if(StrContains(sClassname, "trigger_", false) != -1) SDKHook(iEntity, SDKHook_SpawnPost, OnTriggerSpawned);
+		#endif
+		#if defined EW_MODULE_PHYSBOX
+		else if(StrContains(sClassname, "func_physbox", false) != -1) SDKHook(iEntity, SDKHook_SpawnPost, OnPhysboxSpawned);
 		#endif
 	}
 }
@@ -619,6 +694,9 @@ public void OnEntityDestroyed(int iEntity)
 				}
 			}
 		}
+		#if defined EW_MODULE_PHYSBOX
+		else if(StrContains(sClassname, "func_physbox", false) != -1) EWM_Physbox_OnEntityDestroyed(iEntity);
+		#endif
 	}
 }
 
@@ -727,6 +805,7 @@ public Action OnButtonUse(int iButton, int iActivator, int iCaller, UseType uTyp
 										if(ItemTest.Chat) EWM_Chat_Use(ItemTest, iActivator);
 										#endif
 										
+										ItemTest.Delay = 1;
 										ItemTest.CoolDownTime = ItemTest.CoolDown;
 										g_ItemList.SetArray(i, ItemTest, sizeof(ItemTest));
 										return Plugin_Changed;
@@ -741,6 +820,7 @@ public Action OnButtonUse(int iButton, int iActivator, int iCaller, UseType uTyp
 										if(ItemTest.Chat) EWM_Chat_Use(ItemTest, iActivator);
 										#endif
 										
+										ItemTest.Delay = 1;
 										ItemTest.Uses++;
 										g_ItemList.SetArray(i, ItemTest, sizeof(ItemTest));
 										return Plugin_Changed;
@@ -755,6 +835,7 @@ public Action OnButtonUse(int iButton, int iActivator, int iCaller, UseType uTyp
 										if(ItemTest.Chat) EWM_Chat_Use(ItemTest, iActivator);
 										#endif
 										
+										ItemTest.Delay = 1;
 										ItemTest.CoolDownTime = ItemTest.CoolDown;
 										ItemTest.Uses++;
 										g_ItemList.SetArray(i, ItemTest, sizeof(ItemTest));
@@ -770,6 +851,7 @@ public Action OnButtonUse(int iButton, int iActivator, int iCaller, UseType uTyp
 										if(ItemTest.Chat) EWM_Chat_Use(ItemTest, iActivator);
 										#endif
 										
+										ItemTest.Delay = 1;
 										ItemTest.Uses++;
 										if(ItemTest.Uses >= ItemTest.MaxUses)
 										{
@@ -825,7 +907,7 @@ public Action Event_GameUI_RightClick(const char[] sOutput, int iCaller, int iAc
 								
 								ItemTest.CoolDownTime = ItemTest.CoolDown;
 								g_ItemList.SetArray(i, ItemTest, sizeof(ItemTest));
-								return Plugin_Changed;
+								return Plugin_Continue;
 							}
 						case 3:
 							if(ItemTest.Uses < ItemTest.MaxUses)
@@ -839,7 +921,7 @@ public Action Event_GameUI_RightClick(const char[] sOutput, int iCaller, int iAc
 								
 								ItemTest.Uses++;
 								g_ItemList.SetArray(i, ItemTest, sizeof(ItemTest));
-								return Plugin_Changed;
+								return Plugin_Continue;
 							}
 						case 4:
 							if(ItemTest.Uses < ItemTest.MaxUses && ItemTest.CoolDownTime <= -1)
@@ -854,7 +936,7 @@ public Action Event_GameUI_RightClick(const char[] sOutput, int iCaller, int iAc
 								ItemTest.CoolDownTime = ItemTest.CoolDown;
 								ItemTest.Uses++;
 								g_ItemList.SetArray(i, ItemTest, sizeof(ItemTest));
-								return Plugin_Changed;
+								return Plugin_Continue;
 							}
 						case 5:
 							if(ItemTest.CoolDownTime <= -1)
@@ -873,9 +955,9 @@ public Action Event_GameUI_RightClick(const char[] sOutput, int iCaller, int iAc
 									ItemTest.Uses = 0;
 								}
 								g_ItemList.SetArray(i, ItemTest, sizeof(ItemTest));
-								return Plugin_Changed;
+								return Plugin_Continue;
 							}
-						default: return Plugin_Changed;
+						default: return Plugin_Continue;
 					}
 					return Plugin_Changed;
 				}
@@ -978,6 +1060,9 @@ public Action OnWeaponEquip(int iClient, int iWeapon)
 				break;
 			}
 		}
+		#if defined EW_MODULE_PHYSBOX
+		EWM_Physbox_Pickedup(iClient, iWeapon);
+		#endif
 	}
 }
 
@@ -1030,6 +1115,8 @@ public Action EW_Command_Cooldown(int iClient, int iArgs)
 
 	int iHammerID = StringToInt(sHammerID);
 	int iCooldown = StringToInt(sCooldown);
+	
+	if(iCooldown < 0) iCooldown = 0;
 
 	if (g_bConfigLoaded)
 		for(int i = 0; i<g_ItemList.Length; i++)
@@ -1070,6 +1157,8 @@ public Action EW_Command_Setmaxuses(int iClient, int iArgs)
 
 	int iHammerID = StringToInt(sHammerID);
 	int iMaxUses = StringToInt(sMaxUses);
+	
+	if(iMaxUses < 0) iMaxUses = 0;
 
 	if (g_bConfigLoaded)
 		for(int i = 0; i<g_ItemList.Length; i++)
@@ -1122,6 +1211,59 @@ public Action EW_Command_Addmaxuses(int iClient, int iArgs)
 				if(ItemTest.MaxUses > ItemTest.Uses || bOver)
 				{
 					ItemTest.MaxUses++;
+					g_ItemList.SetArray(i, ItemTest, sizeof(ItemTest));
+				}
+			}
+		}
+
+	return Plugin_Handled;
+}
+
+public Action EW_Command_Setmode(int iClient, int iArgs)
+{
+	if (iArgs < 4)
+	{
+		CReplyToCommand(iClient, "%s%t %s%t: sm_ewsetmode <hammerid> <newmode> <cooldown> <maxuses> [<even if over>]", g_SchemeConfig.Color_Tag, "EW_Tag", g_SchemeConfig.Color_Warning, "Usage");
+		return Plugin_Handled;
+	}
+
+	char sHammerID[32], sNewMode[10], sCooldown[10], sMaxUses[10];
+
+	GetCmdArg(1, sHammerID, sizeof(sHammerID));
+	GetCmdArg(2, sNewMode, sizeof(sNewMode));
+	GetCmdArg(3, sCooldown, sizeof(sCooldown));
+	GetCmdArg(4, sMaxUses, sizeof(sMaxUses));
+	
+	bool bOver = false;
+	if(iArgs >= 5)
+	{
+		char sOver[10];
+		GetCmdArg(5, sOver, sizeof(sOver));
+		int iOver = StringToInt(sOver);
+		if(iOver == 1) bOver = true;
+	}
+
+	int iHammerID = StringToInt(sHammerID);
+	int iNewMode = StringToInt(sNewMode);
+	int iCooldown = StringToInt(sCooldown);
+	int iMaxUses = StringToInt(sMaxUses);
+	
+	if(iNewMode < 1 || iNewMode > 5) iNewMode = 1;
+	if(iCooldown < 0) iCooldown = 0;
+	if(iMaxUses < 0) iMaxUses = 0;
+
+	if (g_bConfigLoaded)
+		for(int i = 0; i<g_ItemList.Length; i++)
+		{
+			class_ItemList ItemTest;
+			g_ItemList.GetArray(i, ItemTest, sizeof(ItemTest));
+			if(ItemTest.HammerID == iHammerID)
+			{
+				if(ItemTest.MaxUses > ItemTest.Uses || bOver || iNewMode == 2 || iNewMode == 1)
+				{
+					ItemTest.Mode = iNewMode;
+					ItemTest.CoolDown = iCooldown;
+					ItemTest.MaxUses = iMaxUses;
 					g_ItemList.SetArray(i, ItemTest, sizeof(ItemTest));
 				}
 			}
